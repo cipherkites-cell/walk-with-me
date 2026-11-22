@@ -695,6 +695,46 @@ namespace Wayfarer
                     continue;
                 }
 
+                // Engine side weapon desync: ActorState says sheathed while the
+                // graph still holds the weapon out. Unequip + re-equip is the
+                // only way out; do exactly what a player does by hand.
+                {
+                    RE::FormID weaponToRestore = 0;
+                    switch (Wayfarer::Guard::StepRepair(*actor, weaponToRestore)) {
+                        case Wayfarer::Guard::RepairAction::kStrip: {
+                            auto* form = actor->GetEquippedObject(false);
+                            if (!form) {
+                                form = actor->GetEquippedObject(true);
+                            }
+                            if (auto* object = form ? form->As<RE::TESBoundObject>() : nullptr) {
+                                auto* equipManager = RE::ActorEquipManager::GetSingleton();
+                                if (equipManager) {
+                                    equipManager->UnequipObject(actor.get(), object, nullptr, 1, nullptr, true,
+                                                                true, true, true);
+                                }
+                                logger::info("[WeaponGuard] {} desynced (graph holds weapon, state says sheathed); "
+                                             "stripping {:08X} for re-equip",
+                                             actor->GetName(), object->GetFormID());
+                            }
+                            break;
+                        }
+                        case Wayfarer::Guard::RepairAction::kRestore: {
+                            if (auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(weaponToRestore)) {
+                                auto* equipManager = RE::ActorEquipManager::GetSingleton();
+                                if (equipManager) {
+                                    equipManager->EquipObject(actor.get(), object, nullptr, 1, nullptr, true, true,
+                                                              true, true);
+                                }
+                                logger::info("[WeaponGuard] {} weapon {:08X} re-equipped", actor->GetName(),
+                                             weaponToRestore);
+                            }
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
+
                 if (HandHolding::OwnsMovement(id)) {
                     const auto approach = HandHolding::GetApproach();
                     bool continueTravel = false;
@@ -2058,7 +2098,9 @@ namespace Wayfarer
         }
         actor.MoveTo(&player);
         actor.SetPosition(landing, true);
+        if (!Wayfarer::Guard::BlockAnimationChange(actor)) {
         actor.EvaluatePackage(false, true);
+        }
     }
 
     const char* FormationController::CompanionPushRejection(RE::Actor& actor) const
@@ -2934,7 +2976,9 @@ namespace Wayfarer
                 package->packData.maxSpeed = static_cast<RE::PACKAGE_DATA::PreferredSpeed>(pace);
                 f.goal.Commit(candidate, actorXY, pace);
 
+                if (!Wayfarer::Guard::BlockAnimationChange(actor)) {
                 actor.EvaluatePackage(false, true);
+                }
                 if (settings.traceMovement && f.goal.stalledTime >= 1.0F) {
                     logger::info("[TravelRetry] {} stalled={:.1f} routeAge={:.2f} ownsPackage={}",
                                  actor.GetName(), f.goal.stalledTime, f.goal.sinceRepath, ownsPackage);
@@ -3024,6 +3068,13 @@ namespace Wayfarer
 
     void FormationController::EndRestPose(ManagedFollower& f, RE::Actor* actor)
     {
+        // Ending a pose fires IdleStop / IdleChairExitStart. Issued while the
+        // engine is still running weaponSheath, that cancels the clip: the weapon
+        // stays in the hand, ActorState reads kSheathed, and the next draw fails.
+        // Defer the whole teardown instead; the caller retries on a later tick.
+        if (actor && Wayfarer::Guard::BlockAnimationChange(*actor)) {
+            return;
+        }
         if (f.restPose.kind == 1 && f.restPose.started && actor && actor->Is3DLoaded() && !actor->IsDead() &&
             !actor->IsInCombat() && !actor->GetCurrentScene() && !IsSpeaking(*actor) &&
             !ShouldSuspendForDialogue()) {
@@ -3124,6 +3175,13 @@ namespace Wayfarer
 
     void FormationController::UpdateRestPose(ManagedFollower& f, RE::Actor& actor, float dt)
     {
+        // Hold every pose decision while the weapon is mid-clip or the actor just
+        // left combat. Reaching the gates below would call EndRestPose, whose
+        // IdleStop cancels the sheathe clip and desyncs weapon state from the model.
+        if (Wayfarer::Guard::BlockAnimationChange(actor)) {
+            f.poseTurn = false;
+            return;
+        }
         if (f.poseExitCheck > 0) {
             // Nobody walks off frozen in a crouch or kneel the exit event did not end.
             f.poseExitCheck -= dt;
@@ -3336,7 +3394,9 @@ namespace Wayfarer
                     auto* stroll = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESPackage>(
                         0x870 + f.slot, Settings::GetSingleton().Get().pluginName);
                     if (actor->GetCurrentPackage() == stroll) {
+                        if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
                         actor->EvaluatePackage(false, true);
+                        }
                     }
                 }
             }
@@ -3397,7 +3457,9 @@ namespace Wayfarer
                     auto* stroll = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESPackage>(
                         0x870 + f.slot, settings.pluginName);
                     if (actor->GetCurrentPackage() == stroll) {
+                        if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
                         actor->EvaluatePackage(false, true);
+                        }
                     }
                     logger::info("[ConversationSpace] {} could not clear the path; yielding",
                                  actor->GetName());
@@ -3486,7 +3548,9 @@ namespace Wayfarer
             f.awarenessActive = f.awarenessWalking = true;
             f.awarenessTime = 0;
             SetSocialFlag(f.slot, 2);
+            if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
             actor->EvaluatePackage(false, true);
+            }
             logger::info("[ConversationSpace] {} steps aside; protected speaker={:08X}", actor->GetName(),
                          speaker->GetFormID());
             break;
@@ -4146,7 +4210,9 @@ namespace Wayfarer
                 f.pendingFeature = AreaFeature::None;
             }
 
+            if (!Wayfarer::Guard::BlockAnimationChange(actor)) {
             actor.EvaluatePackage(false, true);
+            }
         }
         if (!recoveryReady) {
             return;
@@ -4337,7 +4403,9 @@ namespace Wayfarer
             (!nativeBusy || ownPoseTransition) &&
             (entering || previousPose != f.restPose.kind || previouslyWalking != f.restRecovery.walking ||
              previousHold != f.socialHold || moved || (!owns && f.sandboxRefresh >= 1.0F))) {
+            if (!Wayfarer::Guard::BlockAnimationChange(actor)) {
             actor.EvaluatePackage(false, true);
+            }
             f.sandboxRefresh = 0;
         }
         f.speedScale = SmoothSpeedScale(f.speedScale, 1.0F, dt);
@@ -5049,7 +5117,9 @@ namespace Wayfarer
             if (f.restPose.kind == 2 && f.activity == RestActivity::TableSeat) {
                 EndRestPose(f, actor.get());
                 if (actor && !actor->GetCurrentScene() && !IsSpeaking(*actor)) {
+                    if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
                     actor->EvaluatePackage(false, true);
+                    }
                 }
             }
             f.tableSeat = {};
@@ -5155,7 +5225,9 @@ namespace Wayfarer
             f.activity = RestActivity::TableSeat;
             BeginRestPose(f, *actor, 2, AreaFeature::None);
             f.restPose.prepareLimit = 45; // Getting up from another seat and crossing the room.
+            if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
             actor->EvaluatePackage(false, true);
+            }
             logger::info("[Tavern] {} joins {} at the table{}; seat {:08X} distance={:.0f}", actor->GetName(),
                          host ? host->GetName() : "the party", elsewhere ? ", leaving another seat" : "",
                          chair->GetFormID(), Distance2D(actor->GetPosition(), chair->GetPosition()));
@@ -5284,7 +5356,9 @@ namespace Wayfarer
                 }
                 f.activity = RestActivity::Applaud;
                 BeginRestPose(f, *actor, 1, AreaFeature::None);
+                if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
                 actor->EvaluatePackage(false, true);
+                }
                 ++applauding;
             }
             if (applauding) {
@@ -5351,7 +5425,9 @@ namespace Wayfarer
             f.socialPhase = 2;
             SetSocialFlag(f.slot, 2);
             if (!IsSpeaking(*walker) && !walker->GetCurrentScene()) {
+                if (!Wayfarer::Guard::BlockAnimationChange(*walker)) {
                 walker->EvaluatePackage(false, true);
+                }
             }
             logger::info("[Social] {} walks over to talk with {}; distance={:.0f} route={:.0f}",
                          walker->GetName(), host->GetName(), Distance2D(origin, target), route->routeLength);
@@ -5379,7 +5455,9 @@ namespace Wayfarer
         f.socialPhase = f.socialHold ? 1 : 0;
         SetSocialFlag(f.slot, f.socialPhase);
         if (actor && !IsSpeaking(*actor) && !actor->GetCurrentScene()) {
+            if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
             actor->EvaluatePackage(false, true);
+            }
         }
     }
 
@@ -6115,7 +6193,9 @@ namespace Wayfarer
             static_cast<RE::PACKAGE_DATA::PreferredSpeed>(distant ? TravelPace::kJog : TravelPace::kWalk);
         f.travelActive = true;
         if (retarget && actor.GetCurrentPackage() == package) {
+            if (!Wayfarer::Guard::BlockAnimationChange(actor)) {
             actor.EvaluatePackage(false, true);
+            }
         }
         return true;
     }
@@ -6525,7 +6605,9 @@ namespace Wayfarer
                     TravelSpeed::Set(static_cast<std::uint32_t>(f.slot), actor->GetFormID(), f.speedScale);
                     f.travelActive = true;
                     if (retarget && actor->GetCurrentPackage() == package) {
+                        if (!Wayfarer::Guard::BlockAnimationChange(*actor)) {
                         actor->EvaluatePackage(false, true);
+                        }
                     }
                 }
             }
