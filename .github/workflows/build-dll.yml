@@ -8,6 +8,7 @@ on:
       - 'include/**'
       - 'CMakeLists.txt'
       - 'vcpkg.json'
+      - 'vcpkg-configuration.json'
 
 env:
   VCPKG_ROOT: ${{ github.workspace }}\vcpkg
@@ -21,18 +22,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # vcpkg-configuration.json pins the builtin registry to a historical
+      # commit (d87340...), so a shallow clone is unusable: vcpkg has to run
+      # `git show <baseline>:versions/baseline.json` and that commit must
+      # exist in local history. Full clone, then verify, then fetch if needed.
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg clone failed" }
+
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg bootstrap failed" }
           & "$env:VCPKG_ROOT\vcpkg.exe" version
+
+          $config = Get-Content -LiteralPath "vcpkg-configuration.json" -Raw | ConvertFrom-Json
+          # Only the builtin default registry lives inside this vcpkg clone.
+          # Extra git registries (e.g. the colorglass one) are cached and
+          # fetched by vcpkg itself, so they must not be checked here.
+          $builtin = $config.'default-registry'
+          if ($builtin -and $builtin.kind -eq 'builtin' -and $builtin.baseline) {
+            $baseline = $builtin.baseline
+            git -C "$env:VCPKG_ROOT" cat-file -e "$baseline^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "fetching builtin baseline $baseline"
+              git -C "$env:VCPKG_ROOT" fetch --depth 1 origin $baseline
+              git -C "$env:VCPKG_ROOT" cat-file -e "$baseline^{commit}" 2>$null
+              if ($LASTEXITCODE -ne 0) { throw "builtin baseline commit $baseline is not reachable" }
+            }
+            Write-Host "builtin baseline present: $baseline"
+          }
 
       - name: Cache vcpkg installed tree
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-x64-windows-static-md-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-x64-windows-static-md-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-x64-windows-static-md-
 
