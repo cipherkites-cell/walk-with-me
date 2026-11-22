@@ -10,6 +10,7 @@
 #include "hand_holding.h"
 #include "package_control.h"
 #include "travel_space.h"
+#include "weapon_transition_guard.h"
 
 #include "RE/B/BGSPackageDataBool.h"
 #include "RE/B/BGSPackageDataLocation.h"
@@ -3154,7 +3155,8 @@ namespace Wayfarer
         auto* state = actor.AsActorState();
         // Seated companions may talk; everyone else stops posing to speak.
         if (!state || actor.IsInCombat() || actor.GetCurrentScene() || (IsSpeaking(actor) && pose.kind != 2) ||
-            state->IsWeaponDrawn() || actor.IsSneaking() || state->IsSwimming() || actor.IsOnMount()) {
+            state->IsWeaponDrawn() || Wayfarer::Guard::BlockAnimationChange(actor) || actor.IsSneaking() ||
+            state->IsSwimming() || actor.IsOnMount()) {
             EndRestPose(f, &actor);
             f.poseTurn = false;
             return;
@@ -3423,7 +3425,8 @@ namespace Wayfarer
             bool driven = false;
             actor->GetGraphVariableBool("bAnimationDriven", driven);
             if (!state || driven || state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal ||
-                state->IsSwimming() || state->IsWeaponDrawn() || actor->IsOnMount()) {
+                state->IsSwimming() || state->IsWeaponDrawn() ||
+                Wayfarer::Guard::BlockAnimationChange(*actor) || actor->IsOnMount()) {
                 continue;
             }
             const auto pos = actor->GetPosition();
@@ -3509,7 +3512,8 @@ namespace Wayfarer
                 bool driven = false;
                 actor->GetGraphVariableBool("bAnimationDriven", driven);
                 if (!state || actor->IsInCombat() || actor->IsDead() || state->IsWeaponDrawn() ||
-                    actor->IsSneaking() || actor->IsOnMount() || state->IsSwimming() ||
+                    Wayfarer::Guard::BlockAnimationChange(*actor) || actor->IsSneaking() || actor->IsOnMount() ||
+                    state->IsSwimming() ||
                     actor->GetOccupiedFurniture().get() ||
                     state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal || actor->GetCurrentScene() ||
                     IsSpeaking(*actor) || f.restPose.kind || f.restRecovery.walking || social.Involves(id) ||
@@ -4723,8 +4727,9 @@ namespace Wayfarer
             return false;
         }
         auto* state = actor.AsActorState();
-        if (!state || state->IsWeaponDrawn() || state->IsSwimming() ||
-            state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal || actor.GetOccupiedFurniture().get()) {
+        if (!state || state->IsWeaponDrawn() || Wayfarer::Guard::BlockAnimationChange(actor) ||
+            state->IsSwimming() || state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal ||
+            actor.GetOccupiedFurniture().get()) {
             return false;
         }
         auto it = managed.find(actor.GetFormID());
@@ -5128,7 +5133,8 @@ namespace Wayfarer
             if (!actor || !state || f.tableSeat.get() || f.tableRest > 0 || !f.sandboxActive || f.socialWalk ||
                 social.Involves(id) || lookout.actor == id || f.scout.Active() || !actor->Is3DLoaded() ||
                 SocialSpace(*actor) != table.space || IsSpeaking(*actor) || actor->GetCurrentScene() ||
-                state->IsWeaponDrawn() || (f.restPose.kind == 1 && f.activity == RestActivity::Applaud)) {
+                state->IsWeaponDrawn() || Wayfarer::Guard::BlockAnimationChange(*actor) ||
+                (f.restPose.kind == 1 && f.activity == RestActivity::Applaud)) {
                 continue;
             }
             auto* chair = FreeTableChair(*actor, table.center);
@@ -5272,7 +5278,8 @@ namespace Wayfarer
                 if (!actor || !state || !f.sandboxActive || f.restRecovery.walking || f.restPose.kind ||
                     social.Involves(id) || f.tableSeat.get() || actor->GetOccupiedFurniture().get() ||
                     !actor->Is3DLoaded() || IsSpeaking(*actor) || actor->GetCurrentScene() ||
-                    state->IsWeaponDrawn() || state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal) {
+                    state->IsWeaponDrawn() || Wayfarer::Guard::BlockAnimationChange(*actor) ||
+                    state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal) {
                     continue;
                 }
                 f.activity = RestActivity::Applaud;

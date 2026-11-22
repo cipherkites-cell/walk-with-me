@@ -3,6 +3,7 @@
 #include "RE/T/TESCombatEvent.h"
 #include "RE/T/TESDeathEvent.h"
 #include "formation_controller.h"
+#include "weapon_transition_guard.h"
 #include "victory_animation.h"
 #include <cctype>
 
@@ -37,6 +38,14 @@ namespace
         RE::BSEventNotifyControl ProcessEvent(const RE::TESCombatEvent* event,
                                               RE::BSTEventSource<RE::TESCombatEvent>*) override
         {
+            // Leaving combat is the exact moment the engine starts the sheathe
+            // clip. Timestamp it so follower idles can stay off the graph until
+            // the weapon has actually settled.
+            if (event && event->newState == RE::ACTOR_COMBAT_STATE::kNone) {
+                if (auto* actor = event->actor ? event->actor->As<RE::Actor>() : nullptr) {
+                    Wayfarer::Guard::NoteCombatEnded(actor->GetFormID());
+                }
+            }
             if (event && event->newState != RE::ACTOR_COMBAT_STATE::kNone) {
                 auto* actor = event->actor ? event->actor->As<RE::Actor>() : nullptr;
                 auto* target = event->targetActor ? event->targetActor->As<RE::Actor>() : nullptr;

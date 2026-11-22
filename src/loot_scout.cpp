@@ -2,6 +2,7 @@
 #include "engine_compatibility.h"
 #include "formation_controller.h"
 #include "travel_space.h"
+#include "weapon_transition_guard.h"
 #include <numbers>
 
 namespace Wayfarer::Loot
@@ -488,6 +489,12 @@ namespace Wayfarer::Loot
 
     bool Search(RE::Actor& actor, const Target& target)
     {
+        // Never take the animation graph while the engine still runs the sheathe
+        // clip: the cancelled weaponSheath leaves the weapon in the hand while
+        // ActorState already reads kSheathed, and combat can no longer draw.
+        if (Wayfarer::Guard::BlockAnimationChange(actor)) {
+            return false;
+        }
         // Kneel at bodies and floor finds, rummage in low containers, stand at tall ones.
         const bool low = target.center.z - actor.GetPosition().z < 45;
         const RE::FormID loop = target.kind == Kind::Body        ? IDLE_SEARCH_BODY
