@@ -1,0 +1,77 @@
+name: build-wayfarer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+
+env:
+  VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_ROOT\vcpkg.exe" version
+
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-x64-windows-static-md-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-x64-windows-static-md-
+
+      - name: Install manifest dependencies
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows-static-md --clean-after-build
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake --preset skyrim
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          cmake --build --preset release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+
+      - name: Test (non-blocking)
+        shell: pwsh
+        continue-on-error: true
+        run: ctest --test-dir build/skyrim -C Release --output-on-failure
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wayfarer-dll
+          path: |
+            build/skyrim/bin/**/Wayfarer.dll
+            build/skyrim/bin/**/Wayfarer.pdb
+          if-no-files-found: error
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build -Filter Wayfarer.dll -Recurse | Select-Object -First 1
+          if ($dll) {
+            "Built: $($dll.FullName) ($([math]::Round($dll.Length/1KB,1)) KB)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
